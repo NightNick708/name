@@ -1,40 +1,54 @@
-local screensize = vec2(ac.getSim().windowWidth, ac.getSim().windowHeight)
-local timer = 5
- 
--- image_0 is used as the rules splash screen
-local image_0 = {
-    ['src'] = 'https://i.postimg.cc/W1KmB4z8/408-1000.gif',
-    ['sizeX'] = 512, -- size of your image in pixels
-    ['sizeY'] = 512, -- size of your image in pixels
-    ['paddingX'] = (screensize.x - 512) / 2, -- center horizontally
-    ['paddingY'] = screensize.y - 512 - 100 -- 100 pixels from the bottom
-}
- 
--- image_1 is used as the icon
-local image_1 = {
-    ['src'] = 'https://i.postimg.cc/CLMSkCqx/dababy.jpg',
-    ['sizeX'] = 128,
-    ['sizeY'] = 128,
-    ['paddingX'] = screensize.x - 128 - 50, -- align it 50 pixels from the right side
-    ['paddingY'] = 50 -- align it 50 pixels from the top
-}
- 
--- this waits for the driver to not be in the setup screen, then starts the timer for the rule splash image
-function script.update(dt)
-    ac.debug('isInMainMenu', ac.getSim().isInMainMenu)
-    if not ac.getSim().isInMainMenu then
-        if timer >= 0 then
-            timer = timer - dt
-        end
-    end
-end
- 
--- this draws the splash screen then after draws the icon
-function script.drawUI()
-    if timer >= 0 and not ac.getSim().isInMainMenu then
-        ui.drawImage(image_0.src, vec2(image_0.paddingX, image_0.paddingY), vec2(image_0.sizeX + image_0.paddingX, image_0.sizeY + image_0.paddingY), true)
-    end
-    if timer <= 0 then
-        ui.drawImage(image_1.src, vec2(image_1.paddingX, image_1.paddingY), vec2(image_1.sizeX + image_1.paddingX, image_1.sizeY + image_1.paddingY), true)
-    end
-end
+#!/bin/bash
+
+clear
+mkdir -p ~/.cloudshell && touch ~/.cloudshell/no-apt-get-warning
+echo "Установка зависимостей..."
+sudo apt-get update -y --fix-missing && sudo apt-get install wireguard-tools jq -y --fix-missing
+
+priv="${1:-$(wg genkey)}"
+pub="${2:-$(echo "${priv}" | wg pubkey)}"
+api="https://api.cloudflareclient.com/v0i1909051800"
+ins() { curl -s -H 'user-agent:' -H 'content-type: application/json' -X "$1" "${api}/$2" "${@:3}"; }
+sec() { ins "$1" "$2" -H "authorization: Bearer $3" "${@:4}"; }
+response=$(ins POST "reg" -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"${pub}\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+
+id=$(echo "$response" | jq -r '.result.id')
+token=$(echo "$response" | jq -r '.result.token')
+response=$(sec PATCH "reg/${id}" "$token" -d '{"warp_enabled":true}')
+peer_pub=$(echo "$response" | jq -r '.result.config.peers[0].public_key')
+peer_endpoint=$(echo "$response" | jq -r '.result.config.peers[0].endpoint.host')
+client_ipv4=$(echo "$response" | jq -r '.result.config.interface.addresses.v4')
+client_ipv6=$(echo "$response" | jq -r '.result.config.interface.addresses.v6')
+port=$(echo "$peer_endpoint" | sed 's/.*:\([0-9]*\)$/\1/')
+peer_endpoint=$(echo "$peer_endpoint" | sed 's/\(.*\):[0-9]*/162.159.193.5/')
+
+conf=$(cat <<-EOM
+[Interface]
+PrivateKey = ${priv}
+S1 = 0
+S2 = 0
+Jc = 120
+Jmin = 23
+Jmax = 911
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+Address = ${client_ipv4}, ${client_ipv6}
+DNS = 1.1.1.1, 2606:4700:4700::1111, 1.0.0.1, 2606:4700:4700::1001
+
+[Peer]
+PublicKey = ${peer_pub}
+AllowedIPs = 0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1
+Endpoint = ${peer_endpoint}:${port}
+EOM
+)
+
+clear
+echo -e "\n\n\n"
+[ -t 1 ] && echo "########## НАЧАЛО КОНФИГА ##########"
+echo "${conf}"
+[ -t 1 ] && echo "########### КОНЕЦ КОНФИГА ###########"
+
+conf_base64=$(echo -n "${conf}" | base64 -w 0)
+echo "Скачать конфиг файлом: https://immalware.github.io/downloader.html?filename=WARP.conf&content=${conf_base64}"
